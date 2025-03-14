@@ -18,3 +18,5 @@ They can perform the following actions:
 We are interested in finding a sequence of actions that leads to the solution state.
 Also, we want to prove that there is no solution with less than 3 steps.
 
+
+reference: https://github.com/tlaplus/Examples/tree/master/specifications/DieHard

@@ -35,9 +35,6 @@ let init_state = {
   money = 5
 }
 
-
-(* ---Queries--- *)
-
 verify (fun state -> 
   state.money > 0 && 
   state.alice_account = 10 && 
