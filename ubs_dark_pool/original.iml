@@ -1,0 +1,279 @@
+(* a record type corresponding to the current NBB/O and relevant market data signals *)
+type mkt_data = {
+  nbb : real;
+  nbo : real;
+  l_up : real;
+  l_down : real;
+}
+
+type mkt_cond = MKT_NORMAL | MKT_CROSSED | MKT_LOCKED
+
+let which_mkt mkt =
+  if mkt.nbo = mkt.nbb then MKT_LOCKED
+  else if mkt.nbo <. mkt.nbb then MKT_CROSSED
+  else MKT_NORMAL
+
+let mid_point mkt = (mkt.nbb +. mkt.nbo) /. 2.0
+
+
+(* define some types and functions for representing time, price and static_data. *)
+type time = int
+type price = real
+type static_data = {round_lot : int;
+                    tick_size : float }
+
+(* define the order types supported by the dark pool *)
+type order_side = BUY | SELL | SELL_SHORT
+
+type order_peg = NEAR | MID | FAR | NO_PEG
+
+type order_type =
+    MARKET
+  | LIMIT
+  | PEGGED
+  | PEGGED_CI
+  | LIMIT_CI
+  | FIRM_UP_PEGGED
+  | FIRM_UP_LIMIT
+
+
+(* source categories *)
+type order_attr = RESIDENT | IOC
+
+type category = C_ONE | C_TWO | C_THREE | C_FOUR
+
+(* Capacity, Eligibilities and Crossing Restrictions *)
+
+type capacity = Principal | Agency
+
+(* ID of the order source *)
+type order_source = int
+
+(* UBS's ID in the model *)
+let ubs_id = 12
+
+(* Category crossing constraints *)
+type category_elig = {
+  c_one_elig : bool;
+  c_two_elig : bool;
+  c_three_elig : bool;
+  c_four_elig : bool;
+}
+
+let default_cat_elig = {
+  c_one_elig = true;
+  c_two_elig = true;
+  c_three_elig = true;
+  c_four_elig = true;
+}
+
+(* Type for crossing restrictions *)
+type cross_restrict = {
+  cr_self_cross : bool;
+  cr_ubs_principal : bool;
+  cr_round_lot_only : bool;
+  cr_no_locked_nbbo : bool;
+  cr_pegged_mid_point_mode : int;
+
+  (* From the examples, we understand that: 0 - no constraint 1 - mid      *)
+  (* constraint 2 - limit constraint                                       *)
+  cr_enable_conditionals : bool;
+  cr_min_qty : bool;
+  cr_cat_elig : category_elig;
+}
+
+let default_cross_restrict = {
+  cr_self_cross = false;
+  cr_ubs_principal = false;
+  cr_round_lot_only = false;
+  cr_no_locked_nbbo = false;
+  cr_pegged_mid_point_mode = 0;
+  cr_enable_conditionals = false;
+  cr_min_qty = false;
+  cr_cat_elig = default_cat_elig;
+}
+
+
+
+(* define the type order, representing all data associated with a given order. *)
+type order =
+    { id : int;                        (* Order ID *)
+      peg : order_peg;                 (* Near, Mid, Far or NoPeg *)
+      client_id : int;                 (* Client ID *)
+      order_type : order_type;         (* Market, Limit or Pegged order + Conditional Indications *)
+      qty : int;                       (* Original quantity of the order (updated after cancel/replace) *)
+      min_qty : int;                   (* Minimum acceptible quantity to trade *)
+      leaves_qty : int;                (* Remaining quantity of the order *)
+      price : price;                   (* Limit price (Not used if the order *)
+      time : time;                     (* time of order entry (reset on update)) *)
+      src : order_source;              (* ID of the order source *)
+      order_attr : order_attr;         (* Resident or Immediate Or Cancel (IOC) *)
+      capacity : capacity;             (* Principal or agency *)
+      category : category;             (* Client category *)
+      cross_restrict : cross_restrict; (* Crossing restrictions *)
+      locate_found : bool;             (* A sell-short order without a locate would be rejected *)
+      expiry_time : int;               (* When will the order expire? *)
+    }
+
+
+(* Determining how much and at what price two orders may trade *)
+
+(** Uses two orders' timestamps to determin the older price of the two *)
+let older_price (o1, o2) =
+  if o1.time > o2.time then o2.price else o1.price
+
+type fill_price =
+  | Known of price
+  | Unknown
+  | TOP of price
+
+(* Functions for categorisations  *)
+let cat_priority (o1, o2) =
+  if o1.category = C_ONE then false
+  else if o1.category = C_TWO &&
+            (o2.category = C_THREE || o2.category = C_FOUR)
+  then false
+  else if o1.category = C_THREE && (o2.category = C_FOUR) then false
+  else true
+
+let eff_min_qty (o) = min o.min_qty o.leaves_qty
+
+let effective_size (o, should_round, round_lot) =
+  if should_round = true then
+    ( if round_lot > 0 then ( (o.leaves_qty / round_lot) * round_lot )
+      else o.leaves_qty )
+  else
+    o.leaves_qty
+
+(* The pricing functions *)
+let lessAggressive (side, lim_price, far_price) =
+  if lim_price <. 0.0 then far_price else
+    (if side = BUY then Real.min lim_price far_price
+    else Real.max lim_price far_price)
+
+(** This function is used to calculate the priority price *)
+let priority_price (side, o, mkt) =
+  let calc_pegged_price =
+    ( match o.peg with
+      | FAR -> lessAggressive(side, o.price,
+                              (if side = BUY then mkt.nbo else mkt.nbb))
+      | MID -> lessAggressive(side, o.price, (mid_point mkt))
+      | NEAR -> lessAggressive(side, o.price,
+                              (if side = BUY then mkt.nbb else mkt.nbo))
+      | NO_PEG -> o.price )
+  in
+  let calc_nbbo_capped_limit =
+    ( if side = BUY then lessAggressive (BUY, o.price, mkt.nbo)
+      else lessAggressive (SELL, o.price, mkt.nbb ) )
+  in
+  match o.order_type with
+  | LIMIT -> calc_nbbo_capped_limit
+  | MARKET -> if side = BUY then mkt.nbo else mkt.nbb
+  | PEGGED -> calc_pegged_price
+  | PEGGED_CI -> calc_pegged_price
+  | LIMIT_CI -> calc_nbbo_capped_limit
+  | FIRM_UP_PEGGED -> calc_pegged_price
+  | FIRM_UP_LIMIT -> calc_nbbo_capped_limit
+
+(** This is used to calculate the actual price at which the order would trade   *)
+let exec_price (side, o, mkt) =
+  priority_price (side, o, mkt)
+
+
+(* Crossing Restrictions *)
+
+(* Note that these are order-level constraints. There are members of this  *)
+(* structure, like cr_min_qty and cr_round_lot_only that are used in       *)
+(* calculating the effective minimum price.                                *)
+let get_cat_eligibility (cat_elig, c) =
+  match c with
+  | C_ONE -> cat_elig.c_one_elig
+  | C_TWO -> cat_elig.c_two_elig
+  | C_THREE -> cat_elig.c_three_elig
+  | C_FOUR -> cat_elig.c_four_elig
+
+let can_orders_cross (o1, o2) =
+  let o1_cr = o1.cross_restrict in
+  let o2_cr = o2.cross_restrict in
+  if (o1_cr.cr_self_cross || o2_cr.cr_self_cross) && (o1.client_id = o2.client_id)
+  then false
+  else if (o1_cr.cr_ubs_principal || o2_cr.cr_ubs_principal) &&
+            (o1.client_id = ubs_id || o2.client_id = ubs_id) then false
+  else if (o1_cr.cr_enable_conditionals || o2_cr.cr_enable_conditionals) &&
+            (o1.order_type = LIMIT_CI || o1.order_type = PEGGED_CI) then false
+  else true
+
+
+(* Order Book *)
+type order_book = {
+  buys  : order list;
+  sells : order list;
+}
+
+let empty_book = { buys = []; sells = [] }
+
+type fill = { order_buy : order;
+              order_sell : order;
+              fill_qty : int;
+              fill_price : fill_price;
+              fill_time : time;
+            }
+
+(* Ranking functions for orders *)
+let non_ci (ot) = not(ot = PEGGED_CI || ot = LIMIT_CI);;
+
+let order_higher_ranked (side, o1, o2, mkt) =
+  let ot1 = o1.order_type in
+  let ot2 = o2.order_type in
+
+  let p_price1 = priority_price (side, o1, mkt) in
+  let p_price2 = priority_price (side, o2, mkt) in
+
+  let wins_price = (
+    if side = BUY then
+      ( if p_price1 >. p_price2 then 1
+        else if p_price1 = p_price2 then 0
+        else -1)
+    else
+      ( if p_price1 <. p_price2 then 1
+        else if p_price1 = p_price2 then 0
+        else -1) ) in
+
+  let wins_time = (
+    if o1.time < o2.time then 1
+    else if o1.time = o2.time then 0
+    else -1
+  ) in
+
+  (* Note that the CI priority is price, quantity and then time *)
+  if wins_price = 1 then true
+  else if wins_price = -1 then false
+  else (
+    (* Same price level - first check to see whether we're comparing two   *)
+    (* CI orders here                                                      *)
+    if not (non_ci (ot1)) && not (non_ci (ot2)) then
+      o1.leaves_qty > o2.leaves_qty
+    else ( if wins_time = 1 then true
+           else if wins_time = -1 then false
+           else (
+             if non_ci(ot1) then true
+             else if (not(non_ci(ot1)) && non_ci(ot2)) then false
+             else
+               o1.leaves_qty > o2.leaves_qty)
+         )
+  )
+
+
+(* The property we are interested in *)
+let rank_transitivity side o1 o2 o3 mkt =
+  order_higher_ranked(side,o1,o2,mkt) &&
+  order_higher_ranked(side,o2,o3,mkt)
+  ==>
+  order_higher_ranked(side,o1,o3,mkt)
+
+(* verify (fun side o1 o2 o3 mkt -> 
+  not (order_higher_ranked(side, o1, o2, mkt) && order_higher_ranked(side, o2, o3, mkt)) 
+  || order_higher_ranked(side, o1, o3, mkt)) *)
+
+
+(* verify (fun side o1 o2 o3 mkt -> rank_transitivity side o1 o2 o3 mkt) *)

@@ -1,0 +1,36 @@
+(* Bank account state record type *)
+type bank_state = {
+  alice_account: int;
+  bob_account: int;
+  money: int
+}
+
+(* Actions module containing basic banking operations *)
+module Actions = struct
+  let withdraw_from_alice (state: bank_state) : bank_state =
+    { state with alice_account = state.alice_account - state.money }
+
+  let deposit_to_bob (state: bank_state) : bank_state =
+    { state with bob_account = state.bob_account + state.money }
+end
+
+(* Transfers module containing transfer operations *)
+module Transfers = struct
+  let transfer (state: bank_state) : bank_state =
+    state 
+    |> Actions.withdraw_from_alice 
+    |> Actions.deposit_to_bob
+
+  let safe_transfer (state: bank_state) : bank_state =
+    if state.alice_account >= state.money then
+      state |> Actions.withdraw_from_alice |> Actions.deposit_to_bob
+    else
+      state |> Actions.deposit_to_bob
+end
+
+(* Initial account state *)
+let init_state = {
+  alice_account = 10;
+  bob_account = 10;
+  money = 5
+}
