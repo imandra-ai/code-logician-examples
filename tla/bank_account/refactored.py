@@ -1,6 +1,4 @@
-from collections.abc import Callable
 from dataclasses import dataclass
-from functools import reduce
 
 
 @dataclass
@@ -30,25 +28,21 @@ class Actions:
         )
 
 
-class Transfers:
-    @staticmethod
-    def transfer(state: BankState) -> BankState:
-        """Perform a transfer from Alice to Bob"""
-        return reduce(
-            lambda s, f: f(s),
-            [Actions.withdraw_from_alice, Actions.deposit_to_bob],
-            state,
-        )
+def transfer(state: BankState) -> BankState:
+    """Perform a transfer from Alice to Bob"""
+    state = Actions.withdraw_from_alice(state)
+    state = Actions.deposit_to_bob(state)
+    return state
 
-    @staticmethod
-    def safe_transfer(state: BankState) -> BankState:
-        """Perform a transfer only if Alice has sufficient funds"""
-        transfer_chain: list[Callable[[BankState], BankState]] = [
-            Actions.deposit_to_bob
-        ]
-        if state.alice_account >= state.money:
-            transfer_chain.insert(0, Actions.withdraw_from_alice)
-        return reduce(lambda s, f: f(s), transfer_chain, state)
+
+def safe_transfer(state: BankState) -> BankState:
+    """Perform a transfer only if Alice has sufficient funds"""
+    if state.alice_account < state.money:
+        return state
+    else:
+        state = Actions.withdraw_from_alice(state)
+        state = Actions.deposit_to_bob(state)
+        return state
 
 
 init_account: dict[str, int] = {

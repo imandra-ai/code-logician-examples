@@ -28,21 +28,20 @@ class Actions:
         )
 
 
-class Transfers:
-    @staticmethod
-    def transfer(state):
-        """Perform a transfer from Alice to Bob"""
+def transfer(state):
+    """Perform a transfer from Alice to Bob"""
+    state = Actions.withdraw_from_alice(state)
+    state = Actions.deposit_to_bob(state)
+    return state
+
+
+def safe_transfer(state):
+    """Perform a transfer only if Alice has sufficient funds"""
+    if state.alice_account < state.money:
+        return state
+    else:
         state = Actions.withdraw_from_alice(state)
         state = Actions.deposit_to_bob(state)
-        return state
-
-    @staticmethod
-    def safe_transfer(state):
-        """Perform a transfer only if Alice has sufficient funds"""
-        if state.alice_account >= state.money:
-            state = Actions.withdraw_from_alice(state)
-        state = Actions.deposit_to_bob(state)
-        return state
 
 
 init_account = {
